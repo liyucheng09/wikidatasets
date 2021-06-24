@@ -100,14 +100,19 @@ def query_wikidata_dump(dump_path, path, n_lines, test_entities=None, collect_la
 
         if counter % 3000000 == 0:
             # dump in pickle to free memory
+            n_pickle_dump += 1
             if collect_facts:
-                n_pickle_dump += 1
                 facts, fails = write_to_pickle(pickle_path, facts, fails, n_pickle_dump)
+            if collect_labels:
+                pickle.dump(labels, open(pickle_path+f'labels_dump{n_pickle_dump}.pkl', 'wb'))
+                print(f'Pickle Labels Number {n_pickle_dump}')
+                labels={}
 
+    n_pickle_dump +=1
     if collect_facts:
-        _, _ = write_to_pickle(pickle_path, facts, fails, n_pickle_dump + 1)
+        _, _ = write_to_pickle(pickle_path, facts, fails, n_pickle_dump)
     if collect_labels:
-        pickle.dump(labels, open(path + 'labels.pkl', 'wb'))
+        pickle.dump(labels, open(pickle_path + f'labels_dump{n_pickle_dump}.pkl', 'wb'))
 
 
 def build_dataset(path, labels, return_=False, dump_date='23rd April 2019', multi_lingual=None):

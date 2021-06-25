@@ -32,7 +32,7 @@ def get_subclasses(subject):
     return [clean(result['item']['value']) for result in results['results']['bindings']]
 
 
-def query_wikidata_dump(dump_path, path, n_lines, test_entities=None, collect_labels=False, multi_lingual=False):
+def query_wikidata_dump(dump_path, path, n_lines, test_entities=None, collect_labels=False, multi_lingual=False, skip_lines=None):
     """This function goes through a Wikidata dump. It can either collect entities that are instances of \
     `test_entities` or collect the dictionary of labels. It can also do both.
 
@@ -50,18 +50,23 @@ def query_wikidata_dump(dump_path, path, n_lines, test_entities=None, collect_la
         type (id, query_rel, test_entity).
     collect_labels: bool
         Boolean indicating whether the labels dictionary should be collected.
+    multi_lingual: bool
+        whether or not to collect multi-lingual labels for each node.
+    skip_lines: int
+        This is useful when resuming parsing, will skip the first skip_lines lines.
 
     """
     pickle_path = get_pickle_path(path)
     collect_facts = (test_entities is not None)
     fails = []
 
+    n_pickle_dump = 0
     if collect_labels:
         labels = {}
     if collect_facts:
         facts = []
-        n_pickle_dump = 0
 
+    ids = set()
     dump = bz2.open(dump_path, 'rt')
     progress_bar = tqdm(total=n_lines)
     counter = 0  # counter of the number of lines read
@@ -74,6 +79,9 @@ def query_wikidata_dump(dump_path, path, n_lines, test_entities=None, collect_la
             break
 
         counter += 1
+        if skip_lines is not None:
+            if counter < skip_lines - 1:
+                continue
         progress_bar.update(1)
 
         try:
@@ -81,6 +89,9 @@ def query_wikidata_dump(dump_path, path, n_lines, test_entities=None, collect_la
 
             if collect_labels:
                 id_ = get_id(line)
+                if id_ in ids:
+                    continue
+                ids.add(id_)
                 if multi_lingual:
                     labels[id_] = get_multiligual_labels(line)
                 else:
@@ -113,7 +124,149 @@ def query_wikidata_dump(dump_path, path, n_lines, test_entities=None, collect_la
         _, _ = write_to_pickle(pickle_path, facts, fails, n_pickle_dump)
     if collect_labels:
         pickle.dump(labels, open(pickle_path + f'labels_dump{n_pickle_dump}.pkl', 'wb'))
+        
+def query_wikidata_dump_with_multi_processing(dump_path, path, n_lines, test_entities=None, collect_labels=False, multi_lingual=False, skip_lines=None, num_procs=4, size_of_queue=50000):
+    """This function goes through a Wikidata dump. It can either collect entities that are instances of \
+    `test_entities` or collect the dictionary of labels. It can also do both.
+    
+    This func apply multiprocessing.
 
+    Parameters
+    ----------
+    dump_path: str
+        Path to the latest-all.json.bz2 file downloaded from https://dumps.wikimedia.org/wikidatawiki/entities/.
+    path: str
+        Path to where pickle files will be written.
+    n_lines: int
+        Number of lines of the dump. Fastest way I found was `$ bzgrep -c ".*" latest-all.json.bz2`.
+        This can be an upper-bound as it is only used for displaying a progress bar.
+    test_entities: list
+        List of entities to check if a line is instance of. For each line (entity), we check if it as a fact of the \
+        type (id, query_rel, test_entity).
+    collect_labels: bool
+        Boolean indicating whether the labels dictionary should be collected.
+    multi_lingual: bool
+        whether or not to collect multi-lingual labels for each node.
+    skip_lines: int
+        This is useful when resuming parsing, will skip the first skip_lines lines.
+    num_procs: int
+        number of consumers processes.
+
+    """
+    from multiprocessing import Process, Queue
+    
+    pickle_path = get_pickle_path(path)
+    collect_facts = (test_entities is not None)
+    save_steps = int(3000000/num_procs)
+    q=Queue(size_of_queue)
+    ids = set()
+
+    def producer(num_worker):
+        dump = bz2.open(dump_path, 'rt')
+        progress_bar = tqdm(total=n_lines)
+        counter = 0  # counter of the number of lines read
+        line = dump.readline()  # the first line of the file should be "[\n" so we skip it
+        counter=0
+
+        while True:
+            # while there are lines to read
+            line = dump.readline().strip()
+            if len(line) == 0:
+                for i in range(n_worker):
+                    q.put('STOP')
+                
+
+            counter += 1
+            progress_bar.update(1)
+
+            if skip_lines is not None:
+                if counter < skip_lines+1:
+                    continue
+            
+            q.put(line)
+
+    def consumer(process_id):
+        print('process id:', os.getpid())
+        fails = []
+
+        if collect_labels:
+            labels = {}
+        if collect_facts:
+            facts = []
+            
+        n_pickle_dump = 0
+        counter=0
+        
+        while True:
+            try:
+                line=q.get()
+            except:
+                print(f'Process num {process_id} Error!')
+                break
+                
+            counter+=1
+            if line == 'STOP':
+                break
+        
+            try:
+                line = to_json(line)
+
+                if collect_labels:
+                    id_ = get_id(line)
+                    if id_ in ids:
+                        continue
+                    ids.add(id_)
+                    if multi_lingual:
+                        labels[id_] = get_multiligual_labels(line)
+                    else:
+                        labels[id_] = get_label(line)
+
+                if collect_facts:
+                    triplets, instanceOf = to_triplets(line)
+                    if len(instanceOf) > 0 and intersect(instanceOf, test_entities):
+                        facts.extend(triplets)
+
+            except:
+                if type(line) == dict and ('claims' in line.keys()):
+                    if len(line['claims']) != 0:
+                        fails.append(line)
+                else:
+                    fails.append(line)
+
+            if counter % save_steps == 0:
+                # dump in pickle to free memory
+                n_pickle_dump += 1
+                suffix = '_' + str(process_id) + '_' + str(n_pickle_dump)
+                if collect_facts:
+                    facts, fails = write_to_pickle(pickle_path, facts, fails, suffix)
+                if collect_labels:
+                    pickle.dump(labels, open(pickle_path+f'labels_dump{suffix}.pkl', 'wb'))
+                    print(f'Pickle Labels Number {suffix}')
+                    labels={}
+
+        n_pickle_dump +=1
+        suffix = '_' + str(process_id) + '_' + str(n_pickle_dump)
+
+        if collect_facts:
+            _, _ = write_to_pickle(pickle_path, facts, fails, suffix)
+        if collect_labels:
+            pickle.dump(labels, open(pickle_path + f'labels_dump{suffix}.pkl', 'wb'))
+
+    producer = Process(target=producer)
+    producer.daemon=True
+    producer.start()
+    
+    consumers=[]
+    for i in range(num_procs):
+        consumer=Process(target=consumer, args=(i,))
+        consumers.append(consumer)
+        consumer.daemon=True
+        consumer.start()
+    
+    for consumer in consumers:
+        consumer.join()
+    
+    print('Finish ALL !')
 
 def build_dataset(path, labels, return_=False, dump_date='23rd April 2019', multi_lingual=None):
     """Builds datasets from the pickle files produced by the query_wikidata_dump.

@@ -125,7 +125,7 @@ def query_wikidata_dump(dump_path, path, n_lines, test_entities=None, collect_la
     if collect_labels:
         pickle.dump(labels, open(pickle_path + f'labels_dump{n_pickle_dump}.pkl', 'wb'))
         
-def query_wikidata_dump_with_multi_processing(dump_path, path, n_lines, test_entities=None, collect_labels=False, multi_lingual=False, skip_lines=None, num_procs=4, size_of_queue=50000):
+def query_wikidata_dump_with_multi_processing(dump_path, path, n_lines, test_entities=None, collect_labels=False, multi_lingual=False, skip_lines=None, num_procs=4, size_of_queue=50000, memory_lines=3000000):
     """This function goes through a Wikidata dump. It can either collect entities that are instances of \
     `test_entities` or collect the dictionary of labels. It can also do both.
     
@@ -157,11 +157,11 @@ def query_wikidata_dump_with_multi_processing(dump_path, path, n_lines, test_ent
     
     pickle_path = get_pickle_path(path)
     collect_facts = (test_entities is not None)
-    save_steps = int(3000000/num_procs)
+    save_steps = int(memory_lines/num_procs)
     q=Queue(size_of_queue)
     ids = set()
 
-    def producer(num_worker):
+    def producer_func(num_worker):
         dump = bz2.open(dump_path, 'rt')
         progress_bar = tqdm(total=n_lines)
         counter = 0  # counter of the number of lines read
@@ -185,8 +185,9 @@ def query_wikidata_dump_with_multi_processing(dump_path, path, n_lines, test_ent
             
             q.put(line)
 
-    def consumer(process_id):
-        print('process id:', os.getpid())
+    def consumer_func():
+        process_id = os.getpid()
+        print('process id:', process_id)
         fails = []
 
         if collect_labels:
@@ -252,13 +253,13 @@ def query_wikidata_dump_with_multi_processing(dump_path, path, n_lines, test_ent
         if collect_labels:
             pickle.dump(labels, open(pickle_path + f'labels_dump{suffix}.pkl', 'wb'))
 
-    producer = Process(target=producer)
+    producer = Process(target=producer_func, args=(num_procs,))
     producer.daemon=True
     producer.start()
     
     consumers=[]
     for i in range(num_procs):
-        consumer=Process(target=consumer, args=(i,))
+        consumer=Process(target=consumer_func)
         consumers.append(consumer)
         consumer.daemon=True
         consumer.start()

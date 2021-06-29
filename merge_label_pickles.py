@@ -35,6 +35,14 @@ def load_from_pickle_dir(pickle_dir):
             id2label.update(pickle.load(f))
     return id2label
 
+def update_from_pickle_dir(pickle_dir, id2label):
+    files = os.listdir(pickle_dir)
+    for file in tqdm(files):
+        file_path = os.path.join(pickle_dir, file)
+        with open(file_path, 'rb') as f:
+            id2label.update(pickle.load(f))
+    return id2label
+
 def load_from_pickle_file(pickle_file):
     id2label = {}
     with open(pickle_file, 'rb') as f:
@@ -54,6 +62,28 @@ def load_from_json_file(json_file):
             line = json.loads(line)
             id2label[line['id']] = line['labels']
     return id2label
+
+def progressively_get_labels_subset(input_pickle_dir, output_pickle_dir, required_langs):
+    files = os.listdir(input_pickle_dir)
+    for file in tqdm(files):
+        file_path = os.path.join(input_pickle_dir, file)
+        output_file_path = os.path.join(output_pickle_dir, file)
+        with open(file_path, 'rb') as f:
+            id2label=pickle.load(f)
+            
+        lang_subset={}
+        for id, labels in tqdm(id2label.items()):
+            try:
+                sub={lang: labels.get(lang) for lang in required_langs}
+            except:
+                sub = f'No labels for {id}.'
+                continue
+            lang_subset[id] = sub
+        with open(output_file_path, 'wb') as f:
+            pickle.dump(lang_subset, f)
+        lang_subset={}
+        print(f'Successfully save to {output_file_path}')
+    print('Finish subsetting all.')
 
 
 if __name__ == '__main__':

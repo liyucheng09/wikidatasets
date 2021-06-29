@@ -125,7 +125,7 @@ def query_wikidata_dump(dump_path, path, n_lines, test_entities=None, collect_la
     if collect_labels:
         pickle.dump(labels, open(pickle_path + f'labels_dump{n_pickle_dump}.pkl', 'wb'))
         
-def query_wikidata_dump_with_multi_processing(dump_path, path, n_lines, test_entities=None, collect_labels=False, multi_lingual=False, skip_lines=None, num_procs=4, size_of_queue=50000, memory_lines=3000000):
+def query_wikidata_dump_with_multi_processing(dump_path, path, n_lines, test_entities=None, collect_labels=False, multi_lingual=False, skip_lines=None, num_procs=4, size_of_queue=50000, memory_lines=3000000, skip_bytes=None):
     """This function goes through a Wikidata dump. It can either collect entities that are instances of \
     `test_entities` or collect the dictionary of labels. It can also do both.
     
@@ -163,6 +163,11 @@ def query_wikidata_dump_with_multi_processing(dump_path, path, n_lines, test_ent
 
     def producer_func(num_worker):
         dump = bz2.open(dump_path, 'rt')
+        if skip_bytes is not None:
+            dump.seek(skip_bytes)
+            dump.readline()
+            print(f'Skip {skip_bytes} Bytes.')
+        
         progress_bar = tqdm(total=n_lines)
         counter = 0  # counter of the number of lines read
         line = dump.readline()  # the first line of the file should be "[\n" so we skip it
@@ -172,9 +177,9 @@ def query_wikidata_dump_with_multi_processing(dump_path, path, n_lines, test_ent
             # while there are lines to read
             line = dump.readline().strip()
             if len(line) == 0:
-                for i in range(n_worker):
+                for i in range(num_worker):
                     q.put('STOP')
-                
+                break
 
             counter += 1
             progress_bar.update(1)
@@ -246,12 +251,14 @@ def query_wikidata_dump_with_multi_processing(dump_path, path, n_lines, test_ent
                     labels={}
 
         n_pickle_dump +=1
-        suffix = '_' + str(process_id) + '_' + str(n_pickle_dump)
+        suffix = '_' + str(process_id) + '_' + str(n_pickle_dump) + '_rest '
+        print(f'{process_id} Save The Rest {len(labels)} to {suffix}.')
 
         if collect_facts:
             _, _ = write_to_pickle(pickle_path, facts, fails, suffix)
         if collect_labels:
             pickle.dump(labels, open(pickle_path + f'labels_dump{suffix}.pkl', 'wb'))
+            print(f'Pickled labels Number {suffix} Rest.')
 
     producer = Process(target=producer_func, args=(num_procs,))
     producer.daemon=True
